@@ -1,0 +1,61 @@
+#!/bin/sh
+DIR="/etc/s6-linux-init"
+S6PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+GETTY="agetty -L -8 tty1 115200"
+HASGETTY=true
+
+print_help() {
+cat << EOF
+Usage: $(basename $0) [ -h ]
+	-h, --help	Show this
+
+			Uses s6-linux-init-maker
+			Creates and installs s6 init and tools
+			halt init poweroff reboot shutdown telinit
+EOF
+exit 0
+}
+
+print_error() {
+echo "$(basename $0): $1" >&2
+exit 1
+}
+
+get_error() {
+if [ -s "$DIR/log" ]; then
+	cat "$DIR/log" >&2
+	print_error "fix errors"
+fi
+}
+
+[ "$1" ] && print_help
+[ -d "$DIR/skel" ] || print_error "\"$DIR/skel\" doesn't exist"
+[ -z "$(ls -A  "$DIR/skel")" ] && print_error "nothing in \"$DIR/skel\" (rc scripts)"
+
+[ -e /tmp/blah ] && rm -r /tmp/blah
+if $HASGETTY; then
+	s6-linux-init-maker -1 \
+	-p "$S6PATH" \
+	-G "$GETTY" \
+	-f "$DIR/skel" \
+	/tmp/blah 2> "$DIR/log"
+else
+	s6-linux-init-maker -1 \
+	-p "$S6PATH" \
+	-f "$DIR/skel" \
+	/tmp/blah 2> "$DIR/log"
+fi
+get_error
+rm -r "$DIR/current"
+mv /tmp/blah "$DIR/current"
+cp -af /sbin/reboot /tmp/
+cp -af "$DIR/current/bin/"* /sbin/
+
+echo "Installed s6 init and tools."
+read -p "Reboot? [y/N] " -r REPLY
+case "$REPLY" in
+y|Y )
+	/tmp/reboot || reboot || \
+	systemctl reboot || openrc-shutdown -r now || \
+	print_error "can't reboot";;
+esac

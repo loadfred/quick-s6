@@ -1,0 +1,111 @@
+#!/bin/sh
+# THIS CREATES ./src/ ./cpl/ ./log ./compiled IN DIRECTORY DEFINED
+#	 ./src/ FOR SERVICES MANUALLY CREATED BY YOU THAT WILL BE COMPILED
+#	 ./cpl/ FOR COMPILES CREATED BY THIS SCRIPT
+#	 ./log FOR EXITING ON WARNINGS, FIX YOUR SERVICES
+#	 ./compiled FOR S6-RC-INIT TO READ
+# S6 CREATES
+# 	/run/s6-rc/ /run/service/ FOR SYSTEM, S6-RC DEFAULT
+# 	OR $XDG_RUNTIME_DIR/s6-rc/ $XDG_RUNTIME_DIR/service/ FOR USER
+
+print_help() {
+cat << EOF
+Usage: $(basename $0) [ -h ] [ ./directory/ ]
+	-h, --help	Show this
+
+	./directory/	Optional, location for "./src/", "./cpl/", and "./compiled"
+			Default for root is "/etc/s6-rc/", the s6-rc-init default
+			Default for non-root user is "\$HOME/.local/share/s6-rc/"
+			
+			You can set the non-root user's run directory with
+			export XDG_RUNTIME_DIR=/tmp
+EOF
+exit 0
+}
+
+# VARIABLES
+ISROOT=$([ $(id -u) -eq 0 ] && echo true || echo false)
+TIME="$(date '+%Y-%m-%d-%H:%M:%S')"
+if [ "$1" ]; then
+	[ $# -gt 1 ] && print_help
+	case "$1" in
+	-*) print_help;;
+	*) DIR="$(readlink -f -- $1)";;
+	esac
+else
+	$ISROOT && DIR=/etc/s6-rc || DIR="$HOME/.local/share/s6-rc"
+fi
+CPL="$DIR/cpl/compiled-$TIME"
+MAX=5
+
+print_error() {
+echo "$(basename $0): $1" >&2
+exit 1
+}
+
+get_error() {
+if [ -s "$DIR/log" ]; then
+	[ -e "$CPL" ] && rm -r "$CPL"
+	cat "$DIR/log" >&2
+	print_error "fix errors"
+fi
+}
+
+if [ ! -d "$DIR" ]; then
+	read -p "\"$DIR\" doesn't exist, create it? [y/N] " -r REPLY
+	case "$REPLY" in
+	y|Y) mkdir -p "$DIR";;
+	*) exit 1;;
+	esac
+fi
+[ -d "$DIR/src" ] || mkdir "$DIR/src"
+[ -d "$DIR/cpl" ] || mkdir "$DIR/cpl"
+[ -z "$(ls -A "$DIR/src")" ] && print_error "nothing in \"$DIR/src\" to compile"
+
+# COMPILE
+if $ISROOT; then
+	echo "Compiling for SYSTEM SERVICES."
+else
+	echo "Compiling for NON-ROOT USER."
+	[ -z "$XDG_RUNTIME_DIR" ] && \
+		print_error "XDG_RUNTIME_DIR not set"
+	[ -d "$XDG_RUNTIME_DIR" ] || \
+		print_error "XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" \
+		doesn't exist, create on tmpfs \"/run/\" or \"/tmp/\" every boot"
+	[ -O "$XDG_RUNTIME_DIR" ] || \
+		print_error "XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" \
+		not owned by \"$(whoami)\""
+fi
+s6-rc-compile "$CPL" "$DIR/src" 2> "$DIR/log"
+get_error
+rm -r "$DIR/compiled"
+ln -s "$CPL" "$DIR/compiled"
+
+# REMOVE EXCESS COMPILES
+AMT=$(ls -A "$DIR/cpl" | wc -l)
+[ $AMT -gt $MAX ] && [ $MAX -gt 0 ] && \
+	rm -r $(ls -Ad "$DIR/cpl/"* | head -$(expr $AMT - $MAX))
+
+echo "Compiled s6 services."
+if $ISROOT; then
+	read -p "Reboot? [y/N] " -r REPLY
+	case "$REPLY" in
+	y|Y )
+		/tmp/reboot || reboot || \
+		systemctl reboot || openrc-shutdown -r now || \
+		print_error "can't reboot";;
+	esac
+else
+cat << EOF
+
+COMMANDS TO MANUALLY START USER SERVICES, EXECUTE AS "$(whoami)"
+mkdir "$XDG_RUNTIME_DIR/service"
+s6-svscan "$XDG_RUNTIME_DIR/service"
+s6-rc-init -c "$DIR/compiled" -l "$XDG_RUNTIME_DIR/s6-rc" "$XDG_RUNTIME_DIR/service"
+s6-rc -l "$XDG_RUNTIME_DIR/s6-rc" -up change default
+
+COMMANDS TO BRING IT DOWN
+s6-rc -l "$XDG_RUNTIME_DIR/s6-rc" -bDa change
+rm -r "$XDG_RUNTIME_DIR/s6-rc" "$XDG_RUNTIME_DIR/service"
+EOF
+fi
