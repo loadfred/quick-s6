@@ -1,4 +1,5 @@
 #!/bin/sh
+# EDIT THESE VARIABLES IF YOU WANT
 DIR="/etc/s6-linux-init"
 S6PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 GETTY="agetty -L -8 tty1 115200"
